@@ -14,6 +14,7 @@ type Game = {
   id: number
   date: string
   season: number
+  status: string
   home_team_id: number
   away_team_id: number
   home_q1: number
