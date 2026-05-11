@@ -1,17 +1,16 @@
 {
     "crons": [
-    //   {
-    //     "path": "/api/sync/games",
-    //     "schedule": "0 8 * * *"
-    //   },
-      {
-        "path": "/api/sync/odds",
-        "schedule": "20 8 * * *"
-      }
-    //   ,
-    //   {
-    //     "path": "/api/sync/stats",
-    //     "schedule": "40 8 * * *"
-    //   }
+        {
+            "path": "/api/sync/games?postseason=true",
+            "schedule": "0 8 * * *"
+          },
+        {
+            "path": "/api/sync/stats?postseason=true&limit=10",
+            "schedule": "20 8 * * *"
+        },
+        {
+            "path": "/api/sync/odds",
+            "schedule": "40 8 * * *"
+        }
     ]
 }
