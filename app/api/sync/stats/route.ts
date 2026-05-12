@@ -6,8 +6,14 @@ export const maxDuration = 60
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const { searchParams } = new URL(request.url)
+
+    const postseasonOnly = searchParams.get('postseason') === 'true'
+    const force = searchParams.get('force') === 'true'
+    const limit = parseInt(searchParams.get('limit') ?? '50')
+
     const { data: teams, error: teamsError } = await supabase
       .from('teams')
       .select('id, abbreviation')
@@ -27,15 +33,32 @@ export async function GET() {
       }
     }
 
-    const { data: completedGames, error: gamesError } = await supabase
+    // let gamesQuery = supabase
+    //   .from('games')
+    //   .select('id, nba_game_id, postseason')
+    //   .eq('status', 'Final')
+    //   .not('nba_game_id', 'is', null)
+    //   .order('date', { ascending: false })
+
+    // if (postseasonOnly) {
+    //   gamesQuery = gamesQuery.eq('postseason', true)
+    // }
+
+    // const { data: completedGames, error: gamesError } = await gamesQuery
+
+    let gamesQuery = supabase
       .from('games')
-      .select('id, nba_game_id')
+      .select('id, nba_game_id, postseason, date')
       .eq('status', 'Final')
-      .eq('season', 2025)
-      .eq('postseason', true)
       .not('nba_game_id', 'is', null)
-      .order('id', { ascending: true })
-    
+      .order('date', { ascending: false })
+
+    if (postseasonOnly) {
+      gamesQuery = gamesQuery.eq('postseason', true)
+    }
+
+    const { data: allCompletedGames, error: gamesError } = await gamesQuery
+
     if (gamesError) {
       return NextResponse.json(
         { success: false, error: gamesError.message },
@@ -43,15 +66,73 @@ export async function GET() {
       )
     }
 
-    let totalStats = 0
+    const recentGameDates = [
+      ...new Set(
+        (allCompletedGames ?? []).map(game => game.date?.slice(0, 10))
+      ),
+    ]
+      .filter(Boolean)
+      .slice(0, 5)
 
-    for (const game of completedGames ?? []) {
+    const completedGames = (allCompletedGames ?? []).filter(game =>
+      recentGameDates.includes(game.date?.slice(0, 10))
+    )
+
+    if (gamesError) {
+      return NextResponse.json(
+        { success: false, error: gamesError.message },
+        { status: 500 }
+      )
+    }
+
+    if (!completedGames || completedGames.length === 0) {
+      return NextResponse.json({
+        success: true,
+        message: 'No completed games found.',
+        checkedGames: 0,
+        gamesToSync: 0,
+        playerStats: 0,
+      })
+    }
+
+    const gameIds = completedGames.map(game => game.id)
+
+    const { data: existingStats, error: existingStatsError } = await supabase
+      .from('player_stats')
+      .select('game_id')
+      .in('game_id', gameIds)
+
+    if (existingStatsError) {
+      return NextResponse.json(
+        { success: false, error: existingStatsError.message },
+        { status: 500 }
+      )
+    }
+
+    const gamesWithStats = new Set(
+      (existingStats ?? []).map(row => row.game_id)
+    )
+
+    const gamesToSync = force
+      ? completedGames.slice(0, limit)
+      : completedGames
+          .filter(game => !gamesWithStats.has(game.id))
+          .slice(0, limit)
+
+    let totalStats = 0
+    let syncedGames = 0
+    const skippedGames: number[] = []
+
+    for (const game of gamesToSync) {
       console.log(`Processing game.id=${game.id}, nba_game_id=${game.nba_game_id}`)
-      
+
       const boxscore = await fetchNBABoxscore(game.nba_game_id)
-      
+
       if (!boxscore) {
-        console.error(`No boxscore for game.id=${game.id}, nba_game_id=${game.nba_game_id}`)
+        console.error(
+          `No boxscore for game.id=${game.id}, nba_game_id=${game.nba_game_id}`
+        )
+        skippedGames.push(game.id)
         continue
       }
 
@@ -59,7 +140,13 @@ export async function GET() {
       const awayPlayers = boxscore.awayTeam?.players ?? []
       const allPlayers = [...homePlayers, ...awayPlayers]
 
-      if (allPlayers.length === 0) continue
+      if (allPlayers.length === 0) {
+        console.error(
+          `No players found for game.id=${game.id}, nba_game_id=${game.nba_game_id}`
+        )
+        skippedGames.push(game.id)
+        continue
+      }
 
       const homeAbbr = boxscore.homeTeam?.teamTricode
       const awayAbbr = boxscore.awayTeam?.teamTricode
@@ -71,6 +158,7 @@ export async function GET() {
         console.error(
           `Team mapping failed for game ${game.id}. home=${homeAbbr}, away=${awayAbbr}`
         )
+        skippedGames.push(game.id)
         continue
       }
 
@@ -105,8 +193,11 @@ export async function GET() {
         })
 
       if (statsToInsert.length === 0) {
-          console.error(`No player stats to insert for game.id=${game.id}, nba_game_id=${game.nba_game_id}`)
-          continue
+        console.error(
+          `No player stats to insert for game.id=${game.id}, nba_game_id=${game.nba_game_id}`
+        )
+        skippedGames.push(game.id)
+        continue
       }
 
       const { error } = await supabase
@@ -115,18 +206,32 @@ export async function GET() {
 
       if (error) {
         console.error(`Stats error for game ${game.id}: ${error.message}`)
+        skippedGames.push(game.id)
         continue
       }
 
       totalStats += statsToInsert.length
+      syncedGames++
+
       console.log(
         `Game ${game.id} done — ${statsToInsert.length} players | total so far: ${totalStats}`
       )
 
-      await sleep(1000)
+      await sleep(250)
     }
 
-    return NextResponse.json({ success: true, playerStats: totalStats })
+    return NextResponse.json({
+      success: true,
+      postseasonOnly,
+      force,
+      limit,
+      checkedGames: completedGames.length,
+      alreadySyncedGames: gamesWithStats.size,
+      gamesToSync: gamesToSync.length,
+      syncedGames,
+      skippedGames,
+      playerStats: totalStats,
+    })
   } catch (error: any) {
     return NextResponse.json(
       { success: false, error: error.message },
