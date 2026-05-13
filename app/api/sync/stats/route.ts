@@ -33,19 +33,6 @@ export async function GET(request: Request) {
       }
     }
 
-    // let gamesQuery = supabase
-    //   .from('games')
-    //   .select('id, nba_game_id, postseason')
-    //   .eq('status', 'Final')
-    //   .not('nba_game_id', 'is', null)
-    //   .order('date', { ascending: false })
-
-    // if (postseasonOnly) {
-    //   gamesQuery = gamesQuery.eq('postseason', true)
-    // }
-
-    // const { data: completedGames, error: gamesError } = await gamesQuery
-
     let gamesQuery = supabase
       .from('games')
       .select('id, nba_game_id, postseason, date')
@@ -77,13 +64,6 @@ export async function GET(request: Request) {
     const completedGames = (allCompletedGames ?? []).filter(game =>
       recentGameDates.includes(game.date?.slice(0, 10))
     )
-
-    if (gamesError) {
-      return NextResponse.json(
-        { success: false, error: gamesError.message },
-        { status: 500 }
-      )
-    }
 
     if (!completedGames || completedGames.length === 0) {
       return NextResponse.json({
